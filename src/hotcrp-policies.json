@@ -1,0 +1,53 @@
+{
+	"policies": [
+		{
+            "columns": "Submissions.*",
+            "type": "update", 
+            "condition_vars": [ 
+                {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}, 
+                {"paper_authors": "SELECT authors FROM Submissions WHERE sid = UPDATE.sid"}, 
+                {"conference_phase": "SELECT phase FROM ConfMeta"}
+            ], 
+			"predicate": "WHERE updater_role IN paper_authors AND conference_phase = 'submission'", 
+			"description": "Authors can only update their submissions during the submission phase"
+        }, 
+        {
+            "columns": "People.*",
+            "type": "update", 
+            "condition_vars": [ 
+                {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}
+            ], 
+			"predicate": "WHERE updater_role = 'chair' AND UPDATE.role = 'pc'", 
+			"description": "Authors can only update their submissions during the submission phase"
+        }, 
+        {
+            "columns": "ConfMeta.phase",
+            "type": "update", 
+            "condition_vars": [ 
+                {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}
+            ], 
+			"predicate": "WHERE updater_role = 'chair'",
+			"description": "Only the conference chair can change the current conference phase"
+        }, 
+        {
+            "columns": "Reviewers.*",
+            "type": "both", 
+            "condition_vars": [ 
+                {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}
+            ], 
+			"predicate": "WHERE updater_role = 'chair'",
+			"description": "Only the conference chair can assign reviewers to papers"
+        }, 
+        {
+            "columns": "Comments.*",
+            "type": "both", 
+            "condition_vars": [ 
+                {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}, 
+                {"paper_authors": "SELECT authors FROM Submissions WHERE sid = UPDATE.sid"}, 
+                {"paper_reviewers": "SELECT pid FROM Reviewers WHERE sid = UPDATE.sid"}
+            ], 
+			"predicate": "WHERE updater_role IN paper_authors OR update_role IN paper_reviewers",
+			"description": "Only the authors and reviewers of a paper can comment"
+        }  
+	]
+}

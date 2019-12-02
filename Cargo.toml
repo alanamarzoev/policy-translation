@@ -1,0 +1,15 @@
+[package]
+name = "translation"
+version = "0.1.0"
+authors = ["Alana Marzoev <marzoev@mit.edu>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde_json = "1.0"
+sqlparser = "0.5.0"
+mysql = "*" 
+tokio = "0.2.0-alpha.6"
+tokio-test = "0.2.0-alpha.6"
+clap = "2.25.0"

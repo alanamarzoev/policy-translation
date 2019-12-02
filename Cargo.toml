@@ -9,7 +9,5 @@ edition = "2018"
 [dependencies]
 serde_json = "1.0"
 sqlparser = "0.5.0"
-mysql = "*" 
-tokio = "0.2.0-alpha.6"
-tokio-test = "0.2.0-alpha.6"
+mysql = "*"
 clap = "2.25.0"

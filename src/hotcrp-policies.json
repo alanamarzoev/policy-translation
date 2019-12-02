@@ -15,7 +15,8 @@
             "columns": "People.*",
             "type": "update", 
             "condition_vars": [ 
-                {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}
+                {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}, 
+                {"test": "SELECT * FROM People"}
             ], 
 			"predicate": "WHERE updater_role = 'chair' AND UPDATE.role = 'pc'", 
 			"description": "Authors can only update their submissions during the submission phase"

@@ -68,42 +68,71 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
     for (col, val) in values.iter() {
         cols.push(col.clone()); 
     }
-
+    
+    let mut txn = r"BEGIN TRANSACTION "; 
     let mut applicable = false; 
     for (y, policy_array) in policies.iter() {
         match policy_array {
             serde_json::Value::Object(p) => {
                 println!("p: {:?}", p["condition_vars"]); 
-                let mut condition_vars = p["condition_vars"]; 
-                let mut columns = p["columns"]; 
-                let mut predicates = p["predicate"]; 
-                let mut policy_type = p["type"]; 
+                let mut condition_vars = &p["condition_vars"]; 
+                let mut columns = &p["columns"]; 
+                let mut predicates = &p["predicate"]; 
+                let mut policy_type = &p["type"]; 
 
                 // make sure the update affects some subset of the policy cols 
-                for policy in p.iter() {
-                    match policy["columns"].clone() {
-                        serde_json::Value::String(x) => {
-                            if x.contains("*") {
+                match columns.clone() {
+                    serde_json::Value::String(x) => {
+                        if x.contains("*") {
+                            applicable = true; 
+                        }
+                        for col in &cols {
+                            if x.contains(col) {
                                 applicable = true; 
                             }
-                            for col in &cols {
-                                if x.contains(col) {
-                                    applicable = true; 
-                                }
-                            }
-                        }, 
-                        _ => panic!("unimplemented")
-                    }
+                        }
+                    }, 
+                    _ => panic!("unimplemented")
                 }
-
-                // evaluate condition variables 
-                
-
             
-
-
-
-
+                let mut cond_var_stmts = Vec::new(); 
+                // add condition variable evaluation to txn string 
+                println!("condition_vars: {:?}", condition_vars);
+                match condition_vars.clone() {
+                    serde_json::Value::Array(p) => {
+                        for predicate in p.iter() {
+                            match predicate {
+                                serde_json::Value::Object(x) => {
+                                    for (cond_var_name, predicate) in x.iter() {
+                                        let pred = &x[cond_var_name];
+                                        match pred.clone() {
+                                            serde_json::Value::String(h) => {
+                                                cond_var_stmts.push((cond_var_name.clone(), h.clone())); 
+                                            }, 
+                                            _ => panic!("unimplemented")
+                                        }
+                                        println!("h");
+                                        println!("{:?}", pred);
+                                    }
+                                }, 
+                                _ => panic!("unimplemented")
+                            }
+                        }
+                    }, 
+                    _ => panic!("unimplemented")
+                }
+                
+                match predicates.clone() {
+                    serde_json::Value::String(x) => {
+                        let cleaned = x.clone().replace(&['(', ')', ',', '\"', ';', ':', '\'', '\n'][..], "");
+                        for (cond_var_name, cond_var_statement) in cond_var_stmts {
+                            if cleaned.contains(&cond_var_name) {
+                                println!("found cond var name: {:?} in cleaned: {:?}", cond_var_name, cleaned); 
+                            }
+                        }
+                    }, 
+                    _ => {}, 
+                }
 
             }, 
             _ => panic!("unimplemented")

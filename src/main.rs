@@ -8,6 +8,8 @@ use serde_json::Value;
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use mysql as my;
+use std::collections::HashMap;
+
 
 
 #[derive(Debug, PartialEq, Eq)]
@@ -60,14 +62,7 @@ fn get_applicable(table_name: &str, policy_type: &str,
 }
 
 
-// START TRANSACTION; INSERT INTO People ( pid, name, role) SELECT  0, 'alana', 'chair'  WHERE 'chair' = 'chair' ; COMMIT;
-
-// START TRANSACTION; 
-// SELECT role INTO @pred1 FROM People WHERE pid = 0; 
-// INSERT INTO People ( pid, name, role) SELECT  0, 'alana', 'chair'  
-// WHERE  @pred1 = 'chair' AND 'chair' = 'chair' ; COMMIT;
-
-fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str, ptype: &str, values: Vec<(String, String)>) -> String {
+fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str, ptype: &str, values: Vec<(String, String)>, table_info: HashMap<String, HashMap<String, String>>) -> String {
     // PROCESS: 
     // 1. figure out policy predicates, fill in necessary values (i.e. UPDATE etc) 
     // 2. evaluate condition variables 
@@ -138,6 +133,7 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                         let mut predicate_components = predicate_components.split("AND");
                         let mut predicate_components = predicate_components.collect::<Vec<&str>>();
                         
+                        println!("Pred comp {:?}", predicate_components); 
                         for comp in &predicate_components {
                             let mut updated = false; 
                             for (cond_var_name, cond_var_statement) in cond_var_stmts.clone() {
@@ -147,8 +143,11 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                                     let cond_var_name_slice = &*cond_var_name; 
                                     let new_stmt = comp.replace(cond_var_name_slice, cond_var_slice);
                                     let new_stmt = new_stmt.trim(); 
+                                    let mut new_stmt = new_stmt.replace("\"", "");
                                     let mut new_stmt_mod = new_stmt.split("="); 
                                     let mut new_stmt_mod = new_stmt_mod.collect::<Vec<&str>>()[1];
+
+                                    println!("pol pred {:?}", new_stmt);
                                     policy_predicates.push(new_stmt.to_owned()); 
                                     updated = true; 
                                     break; 
@@ -165,16 +164,24 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                 }
                 
                 for pred in &policy_predicates {
+                    // TODO: add quotations based on type 
                     if pred.contains(&"UPDATE") {
                         let mut field = pred.split("UPDATE."); 
                         let mut field = field.collect::<Vec<&str>>()[1];
                         let mut field = field.split("="); 
                         let mut field = field.collect::<Vec<&str>>();
                         let mut updated = false; 
+                        let mut tinfo = table_info[table_name].clone(); 
                         for (col, val) in values.iter() {
+                            let mut stripped = field[0].replace(" ", "");
                             let mut stripped = field[0].replace(" ", "");  
                             if stripped == *col {
                                 let mut to_replace = format!("UPDATE.{}", field[0].trim()); 
+                                let mut val = val.clone(); 
+                                if tinfo[col] == "str" {
+                                    println!("tinfo col {}", tinfo[col]); 
+                                    val = format!("'{}'", val); 
+                                }
                                 let mut new_pred = pred.replace(&*to_replace, &*val);
                                 let mut new_pred = new_pred.trim();  
                                 updated = true; 
@@ -216,13 +223,28 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
         txn = format!("{}) ", txn); 
         txn = format!("{}{}", txn, "SELECT "); 
 
+
+        // TODO: add quotes based on type 
         let mut i = 0;
+        println!("tinfo {:?}", table_info); 
+        let mut tinfo = table_info[table_name].clone(); 
+        println!("vals {:?}", values); 
         for (col, val) in values.iter() {
-            if i == 0 {
-                txn = format!("{} '{}'", txn, &*val.trim());
+            println!("col {} info {}", col, tinfo[col]); 
+            if tinfo[col] == "str" {
+                if i == 0 {
+                    txn = format!("{} '{}'", txn, &*val.trim());
+                } else {
+                    txn = format!("{}, '{}'", txn, &*val.trim());
+                }
             } else {
-                txn = format!("'{}', '{}'", txn, &*val.trim());
+                if i == 0 {
+                    txn = format!("{} {}", txn, &*val.trim());
+                } else {
+                    txn = format!("{}, {}", txn, &*val.trim());
+                }
             }
+            println!("txn : {:?}", txn); 
             i += 1;
         }
 
@@ -245,7 +267,7 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
 }
 
 
-fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>) -> String {
+fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>, table_info: HashMap<String, HashMap<String, String>>) -> String {
     let dialect = GenericDialect {}; // or AnsiDialect, or your own dialect ...
     let query = Parser::parse_sql(&dialect, updates.to_string()).unwrap();
 
@@ -275,7 +297,7 @@ fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>
                 i += 1; 
             }
             let mut applicable = get_applicable(table_name, ptype, policies.clone());
-            let mut compliant_query = transform(applicable, table_name, ptype, cv_pairs); 
+            let mut compliant_query = transform(applicable, table_name, ptype, cv_pairs, table_info); 
             return compliant_query; 
 
         }, 
@@ -321,8 +343,16 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
 
     policy_file.read_to_string(&mut policies);
     updates_file.read_to_string(&mut updates);
-    
+
     let policy_config: serde_json::Map<String, Value> = serde_json::from_str(&policies)?;
+
+    let mut table_info = HashMap::new(); 
+    let mut col_dict = HashMap::new(); 
+    col_dict.insert("pid".to_string(), "int".to_string()); 
+    col_dict.insert("name".to_string(), "str".to_string());
+    col_dict.insert("role".to_string(), "str".to_string()); 
+
+    table_info.insert("People".to_string(), col_dict); 
     
     // spin up DB & populate!
     let pool = my::Pool::new("mysql://root@localhost:3306/mysql").unwrap();
@@ -368,8 +398,9 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
                     }).unwrap();
     }
 
-    let mut txn = translate(&updates, policy_config);
+    let mut txn = translate(&updates, policy_config, table_info);
 
+    println!("\n\n{}\n\n", txn); 
     pool.prep_exec(txn, ()).unwrap();
 
     Ok(()) 

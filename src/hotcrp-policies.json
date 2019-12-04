@@ -15,7 +15,7 @@
             "columns": "People.*",
             "type": "update", 
             "condition_vars": [ 
-                {"updater_role": "SELECT role INTO @updater_role FROM People WHERE pid = 0"}, 
+                {"updater_role": "SELECT role INTO @updater_role FROM People WHERE pid = 0"}
             ], 
 			"predicate": "WHERE updater_role = 'chair' AND UPDATE.role = 'chair'", 
 			"description": "Authors can only update their submissions during the submission phase"

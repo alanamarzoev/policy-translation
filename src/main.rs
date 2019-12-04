@@ -59,7 +59,15 @@ fn get_applicable(table_name: &str, policy_type: &str,
     return applicable
 }
 
-fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str, ptype: &str, values: Vec<(String, String)>) {
+
+// START TRANSACTION; INSERT INTO People ( pid, name, role) SELECT  0, 'alana', 'chair'  WHERE 'chair' = 'chair' ; COMMIT;
+
+// START TRANSACTION; 
+// SELECT role INTO @pred1 FROM People WHERE pid = 0; 
+// INSERT INTO People ( pid, name, role) SELECT  0, 'alana', 'chair'  
+// WHERE  @pred1 = 'chair' AND 'chair' = 'chair' ; COMMIT;
+
+fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str, ptype: &str, values: Vec<(String, String)>) -> String {
     // PROCESS: 
     // 1. figure out policy predicates, fill in necessary values (i.e. UPDATE etc) 
     // 2. evaluate condition variables 
@@ -68,9 +76,11 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
     for (col, val) in values.iter() {
         cols.push(col.clone()); 
     }
-
-    let mut new_predicates : Vec<String> = Vec::new(); 
     
+    let mut new_predicates : Vec<String> = Vec::new(); 
+
+    let mut cond_var_stmts = Vec::new(); 
+
     let mut applicable = false; 
     for (y, policy_array) in policies.iter() {
         match policy_array {
@@ -95,7 +105,6 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                     _ => panic!("unimplemented")
                 }
             
-                let mut cond_var_stmts = Vec::new(); 
                 // add condition variable evaluation to txn string 
                 match condition_vars.clone() {
                     serde_json::Value::Array(p) => {
@@ -110,8 +119,6 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                                             }, 
                                             _ => panic!("unimplemented")
                                         }
-                                        println!("h");
-                                        println!("{:?}", pred);
                                     }
                                 }, 
                                 _ => panic!("unimplemented")
@@ -121,26 +128,27 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                     _ => panic!("unimplemented")
                 }
                 
+
                 let mut policy_predicates = Vec::new();  
                 // replace cond vars and "UPDATE."s
-                println!("PREDICATES: {:?}", predicates); 
+
                 match predicates.clone() {
                     serde_json::Value::String(x) => {
-                        let cleaned = x.clone().replace(&[',', ';', ':', '\'', '\n'][..], "");
-                        let mut predicate_components = cleaned.clone().replace("WHERE", ""); 
+                        let mut predicate_components = x.clone().replace("WHERE", ""); 
                         let mut predicate_components = predicate_components.split("AND");
                         let mut predicate_components = predicate_components.collect::<Vec<&str>>();
-                        println!("COMPONENTS: {:?}", predicate_components);
                         
                         for comp in &predicate_components {
                             let mut updated = false; 
                             for (cond_var_name, cond_var_statement) in cond_var_stmts.clone() {
                                 if comp.contains(&cond_var_name) {
-                                    let mut s = format!("({:?})", cond_var_statement);
+                                    let mut s = format!("@{:?}", cond_var_name);
                                     let cond_var_slice: &str = &*s;  // take a full slice of the string
                                     let cond_var_name_slice = &*cond_var_name; 
                                     let new_stmt = comp.replace(cond_var_name_slice, cond_var_slice);
                                     let new_stmt = new_stmt.trim(); 
+                                    let mut new_stmt_mod = new_stmt.split("="); 
+                                    let mut new_stmt_mod = new_stmt_mod.collect::<Vec<&str>>()[1];
                                     policy_predicates.push(new_stmt.to_owned()); 
                                     updated = true; 
                                     break; 
@@ -151,9 +159,7 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                                 let c = c.trim();
                                 policy_predicates.push(c.to_owned()); 
                             }
-                        }
-                        println!("policy predicates: {:?}", policy_predicates);
-                    
+                        }                    
                     }, 
                     _ => {}, 
                 }
@@ -162,19 +168,15 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                     if pred.contains(&"UPDATE") {
                         let mut field = pred.split("UPDATE."); 
                         let mut field = field.collect::<Vec<&str>>()[1];
-                        println!("field: {:?}", field); 
                         let mut field = field.split("="); 
                         let mut field = field.collect::<Vec<&str>>();
-                        println!("field: {:?}", field); 
                         let mut updated = false; 
                         for (col, val) in values.iter() {
                             let mut stripped = field[0].replace(" ", "");  
-                            println!("stripped: {}, col: {}", stripped, col);
                             if stripped == *col {
                                 let mut to_replace = format!("UPDATE.{}", field[0].trim()); 
                                 let mut new_pred = pred.replace(&*to_replace, &*val);
                                 let mut new_pred = new_pred.trim();  
-                                println!("new pred: {:?}", new_pred); 
                                 updated = true; 
                                 new_predicates.push(new_pred.to_string()); 
                             }
@@ -187,65 +189,63 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                     }
                 }
 
-                println!("new predicates: {:?}", new_predicates); 
 
             }, 
             _ => panic!("unimplemented")
         }
     }
 
-    // START TRANSACTION;
-    // INSERT INTO People (pid, name, role)
-    // SELECT
-    // 0, 'alana', 'chair'
-    // FROM DUAL
-    // WHERE 'chair' = 'chair';
-    // COMMIT;
+    let mut txn = "START TRANSACTION; ".to_string(); 
+    for (var, cmd) in cond_var_stmts.iter() {
+        txn = format!("{} {}; ", txn, cmd); 
+    }
 
-    let mut txn = "START TRANSACTION; \n"; 
     if ptype == "insert" {
-        let mut txn = format!("{:?}{:?}", txn, format!("INSERT INTO {} (", table_name.to_string())); 
+        txn = format!("{}{}", txn, format!("INSERT INTO {} (", table_name)); 
 
         let mut i = 0;
         for (col, val) in values.iter() {
             if i == 0 {
-                txn = format!("{:?} {:?}", txn, col.to_string().trim());
+                txn = format!("{} {}", txn, &*col.trim());
             } else {
-                txn = format!("{:?}, {:?}", txn, col.to_string().trim());
+                txn = format!("{}, {}", txn, &*col.trim());
             }
+            i += 1;
         }
         
-        txn = format!("{:?}) \n", txn); 
-        let mut txn = txn.clone().replace(&['\'', '"'][..], "");
-        txn = format!("{:?}{:?}", txn, "SELECT \n".to_string()); 
+        txn = format!("{}) ", txn); 
+        txn = format!("{}{}", txn, "SELECT "); 
 
         let mut i = 0;
         for (col, val) in values.iter() {
             if i == 0 {
-                txn = format!("{:?} {:?}", txn, val.to_string().trim());
+                txn = format!("{} '{}'", txn, &*val.trim());
             } else {
-                txn = format!("{:?}, {:?}", txn, val.to_string().trim());
+                txn = format!("'{}', '{}'", txn, &*val.trim());
             }
+            i += 1;
         }
 
-        txn = format!("{:?} FROM DUAL\n WHERE ", txn);
+        txn = format!("{} WHERE ", txn);
         
         // add predicates 
         let mut i = 0;
         for pred in new_predicates.iter() {
             if i == 0 {
-                txn = format!("{:?} {:?}", txn, pred);
+                txn = format!("{} {}", txn, pred);
             } else {
-                txn = format!("{:?} AND {:?}", txn, pred);
+                txn = format!("{} AND {}", txn, pred);
             }
+            i += 1; 
         }
-
-        println!("txn: {:?}", txn.clone().replace(&['\'', '"'][..], "")); 
+        txn = format!("{} {}", txn, "; COMMIT;");
     }
+
+    return txn; 
 }
 
 
-fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>) {
+fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>) -> String {
     let dialect = GenericDialect {}; // or AnsiDialect, or your own dialect ...
     let query = Parser::parse_sql(&dialect, updates.to_string()).unwrap();
 
@@ -258,7 +258,6 @@ fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>
             let m = s.clone().replace(&['(', ')', ',', '\"', '.', ';', ':', '\'', '\n'][..], "");
             let vals = m.split(" "); 
             for val in vals {
-                println!("split: {:#?}", val.clone());
                 values.push(val.to_owned()); 
             }
         }
@@ -277,6 +276,7 @@ fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>
             }
             let mut applicable = get_applicable(table_name, ptype, policies.clone());
             let mut compliant_query = transform(applicable, table_name, ptype, cv_pairs); 
+            return compliant_query; 
 
         }, 
         sqlparser::ast::Statement::Update{table_name, assignments, selection} => {
@@ -331,32 +331,32 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
         pid int not null,
         name text not null,
         role text not null
-    )", ()).unwrap();
+    );", ()).unwrap();
 
     pool.prep_exec(r"CREATE TEMPORARY TABLE Comments (
         cid int not null,
         pid int not null,
         comment text not null
-    )", ()).unwrap();
+    );", ()).unwrap();
 
     pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
         pid int not null,
-        sid int not null    // )", ()).unwrap();
+        sid int not null);", ()).unwrap();
 
     pool.prep_exec(r"CREATE TEMPORARY TABLE ConfMeta (
         phase text not null
-    )", ()).unwrap();
+    );", ()).unwrap();
 
     pool.prep_exec(r"CREATE TEMPORARY TABLE Submissions (
         sid int not null,
         primary_author text not null,
         title text not null
-    )", ()).unwrap();
+    );", ()).unwrap();
 
     pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
         pid int not null,
         sid int not null
-    )", ()).unwrap();
+    );", ()).unwrap();
 
     
     for mut stmt in pool.prepare(r"INSERT INTO ConfMeta
@@ -368,30 +368,9 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
                     }).unwrap();
     }
 
-    translate(&updates, policy_config);
+    let mut txn = translate(&updates, policy_config);
 
-    // let payments = vec![
-    //     Payment { customer_id: 1, amount: 2, account_name: None },
-    //     Payment { customer_id: 3, amount: 4, account_name: Some("foo".into()) },
-    //     Payment { customer_id: 5, amount: 6, account_name: None },
-    //     Payment { customer_id: 7, amount: 8, account_name: None },
-    //     Payment { customer_id: 9, amount: 10, account_name: Some("bar".into()) },
-    // ];
-
-    // for mut stmt in pool.prepare(r"INSERT INTO payment
-    //                                    (customer_id, amount, account_name)
-    //                                VALUES
-    //                                    (:customer_id, :amount, :account_name)").into_iter() {
-    //     for p in payments.iter() {
-    //         // `execute` takes ownership of `params` so we pass account name by reference.
-    //         // Unwrap each result just to make sure no errors happened.
-    //         stmt.execute(params!{
-    //             "customer_id" => p.customer_id,
-    //             "amount" => p.amount,
-    //             "account_name" => &p.account_name,
-    //         }).unwrap();
-    //     }
-    // }
+    pool.prep_exec(txn, ()).unwrap();
 
     Ok(()) 
 }

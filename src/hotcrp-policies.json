@@ -18,7 +18,7 @@
                 {"updater_role": "SELECT role FROM People WHERE pid = UserContext.id"}, 
                 {"test": "SELECT * FROM People"}
             ], 
-			"predicate": "WHERE updater_role = 'chair' AND UPDATE.role = 'pc'", 
+			"predicate": "WHERE updater_role = 'chair' AND UPDATE.role = 'chair'", 
 			"description": "Authors can only update their submissions during the submission phase"
         }, 
         {

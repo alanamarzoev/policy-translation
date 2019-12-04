@@ -68,13 +68,13 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
     for (col, val) in values.iter() {
         cols.push(col.clone()); 
     }
+
+    let mut new_predicates : Vec<String> = Vec::new(); 
     
-    let mut txn = r"BEGIN TRANSACTION "; 
     let mut applicable = false; 
     for (y, policy_array) in policies.iter() {
         match policy_array {
             serde_json::Value::Object(p) => {
-                println!("p: {:?}", p["condition_vars"]); 
                 let mut condition_vars = &p["condition_vars"]; 
                 let mut columns = &p["columns"]; 
                 let mut predicates = &p["predicate"]; 
@@ -97,7 +97,6 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
             
                 let mut cond_var_stmts = Vec::new(); 
                 // add condition variable evaluation to txn string 
-                println!("condition_vars: {:?}", condition_vars);
                 match condition_vars.clone() {
                     serde_json::Value::Array(p) => {
                         for predicate in p.iter() {
@@ -122,41 +121,127 @@ fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str
                     _ => panic!("unimplemented")
                 }
                 
+                let mut policy_predicates = Vec::new();  
+                // replace cond vars and "UPDATE."s
+                println!("PREDICATES: {:?}", predicates); 
                 match predicates.clone() {
                     serde_json::Value::String(x) => {
-                        let cleaned = x.clone().replace(&['(', ')', ',', '\"', ';', ':', '\'', '\n'][..], "");
-                        for (cond_var_name, cond_var_statement) in cond_var_stmts {
-                            if cleaned.contains(&cond_var_name) {
-                                println!("found cond var name: {:?} in cleaned: {:?}", cond_var_name, cleaned); 
+                        let cleaned = x.clone().replace(&[',', ';', ':', '\'', '\n'][..], "");
+                        let mut predicate_components = cleaned.clone().replace("WHERE", ""); 
+                        let mut predicate_components = predicate_components.split("AND");
+                        let mut predicate_components = predicate_components.collect::<Vec<&str>>();
+                        println!("COMPONENTS: {:?}", predicate_components);
+                        
+                        for comp in &predicate_components {
+                            let mut updated = false; 
+                            for (cond_var_name, cond_var_statement) in cond_var_stmts.clone() {
+                                if comp.contains(&cond_var_name) {
+                                    let mut s = format!("({:?})", cond_var_statement);
+                                    let cond_var_slice: &str = &*s;  // take a full slice of the string
+                                    let cond_var_name_slice = &*cond_var_name; 
+                                    let new_stmt = comp.replace(cond_var_name_slice, cond_var_slice);
+                                    let new_stmt = new_stmt.trim(); 
+                                    policy_predicates.push(new_stmt.to_owned()); 
+                                    updated = true; 
+                                    break; 
+                                }
+                            }
+                            if updated == false {
+                                let mut c = comp.to_string(); 
+                                let c = c.trim();
+                                policy_predicates.push(c.to_owned()); 
                             }
                         }
+                        println!("policy predicates: {:?}", policy_predicates);
+                    
                     }, 
                     _ => {}, 
                 }
+                
+                for pred in &policy_predicates {
+                    if pred.contains(&"UPDATE") {
+                        let mut field = pred.split("UPDATE."); 
+                        let mut field = field.collect::<Vec<&str>>()[1];
+                        println!("field: {:?}", field); 
+                        let mut field = field.split("="); 
+                        let mut field = field.collect::<Vec<&str>>();
+                        println!("field: {:?}", field); 
+                        let mut updated = false; 
+                        for (col, val) in values.iter() {
+                            let mut stripped = field[0].replace(" ", "");  
+                            println!("stripped: {}, col: {}", stripped, col);
+                            if stripped == *col {
+                                let mut to_replace = format!("UPDATE.{}", field[0].trim()); 
+                                let mut new_pred = pred.replace(&*to_replace, &*val);
+                                let mut new_pred = new_pred.trim();  
+                                println!("new pred: {:?}", new_pred); 
+                                updated = true; 
+                                new_predicates.push(new_pred.to_string()); 
+                            }
+                        }
+                        if !updated {
+                            new_predicates.push(pred.to_string()); 
+                        }
+                    } else {
+                        new_predicates.push(pred.to_string()); 
+                    }
+                }
+
+                println!("new predicates: {:?}", new_predicates); 
 
             }, 
             _ => panic!("unimplemented")
         }
     }
-    
 
-    for (col, val) in values.iter() {
+    // START TRANSACTION;
+    // INSERT INTO People (pid, name, role)
+    // SELECT
+    // 0, 'alana', 'chair'
+    // FROM DUAL
+    // WHERE 'chair' = 'chair';
+    // COMMIT;
+
+    let mut txn = "START TRANSACTION; \n"; 
+    if ptype == "insert" {
+        let mut txn = format!("{:?}{:?}", txn, format!("INSERT INTO {} (", table_name.to_string())); 
+
+        let mut i = 0;
+        for (col, val) in values.iter() {
+            if i == 0 {
+                txn = format!("{:?} {:?}", txn, col.to_string().trim());
+            } else {
+                txn = format!("{:?}, {:?}", txn, col.to_string().trim());
+            }
+        }
         
+        txn = format!("{:?}) \n", txn); 
+        let mut txn = txn.clone().replace(&['\'', '"'][..], "");
+        txn = format!("{:?}{:?}", txn, "SELECT \n".to_string()); 
+
+        let mut i = 0;
+        for (col, val) in values.iter() {
+            if i == 0 {
+                txn = format!("{:?} {:?}", txn, val.to_string().trim());
+            } else {
+                txn = format!("{:?}, {:?}", txn, val.to_string().trim());
+            }
+        }
+
+        txn = format!("{:?} FROM DUAL\n WHERE ", txn);
+        
+        // add predicates 
+        let mut i = 0;
+        for pred in new_predicates.iter() {
+            if i == 0 {
+                txn = format!("{:?} {:?}", txn, pred);
+            } else {
+                txn = format!("{:?} AND {:?}", txn, pred);
+            }
+        }
+
+        println!("txn: {:?}", txn.clone().replace(&['\'', '"'][..], "")); 
     }
-
-    println!("p: {:#?}", policies); 
-    // let mut query_str_0 = format!(r"INSERT INTO {:?} ({:?}", table_name, col); 
-    // let mut query_str_1 = r" VALUES ( "; 
-    // for (col, val) in values.iter() { 
-        
-    //     let mut new_0 = format!("{:?} {:?}", query_str_0, col); 
-    //     let mut new_1 = format!("{:?}")
-        
-    // }
-    // r"INSERT INTO payment
-    //                                    (customer_id, amount, account_name)
-    //                                VALUES
-    //                                    (:customer_id, :amount, :account_name)"
 }
 
 
@@ -240,48 +325,48 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
     let policy_config: serde_json::Map<String, Value> = serde_json::from_str(&policies)?;
     
     // spin up DB & populate!
-    // let pool = my::Pool::new("mysql://root@localhost:3306/mysql").unwrap();
+    let pool = my::Pool::new("mysql://root@localhost:3306/mysql").unwrap();
 
-    // pool.prep_exec(r"CREATE TEMPORARY TABLE People (
-    //     pid int not null,
-    //     name text not null,
-    //     role text not null
-    // )", ()).unwrap();
+    pool.prep_exec(r"CREATE TEMPORARY TABLE People (
+        pid int not null,
+        name text not null,
+        role text not null
+    )", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TEMPORARY TABLE Comments (
-    //     cid int not null,
-    //     pid int not null,
-    //     comment text not null
-    // )", ()).unwrap();
+    pool.prep_exec(r"CREATE TEMPORARY TABLE Comments (
+        cid int not null,
+        pid int not null,
+        comment text not null
+    )", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
-    //     pid int not null,
-    //     sid int not null    // )", ()).unwrap();
+    pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
+        pid int not null,
+        sid int not null    // )", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TEMPORARY TABLE ConfMeta (
-    //     phase text not null
-    // )", ()).unwrap();
+    pool.prep_exec(r"CREATE TEMPORARY TABLE ConfMeta (
+        phase text not null
+    )", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TEMPORARY TABLE Submissions (
-    //     sid int not null,
-    //     primary_author text not null,
-    //     title text not null
-    // )", ()).unwrap();
+    pool.prep_exec(r"CREATE TEMPORARY TABLE Submissions (
+        sid int not null,
+        primary_author text not null,
+        title text not null
+    )", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
-    //     pid int not null,
-    //     sid int not null
-    // )", ()).unwrap();
+    pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
+        pid int not null,
+        sid int not null
+    )", ()).unwrap();
 
     
-    // for mut stmt in pool.prepare(r"INSERT INTO ConfMeta
-    //                                    (phase)
-    //                                VALUES
-    //                                    (:phase)").into_iter() {
-    //     stmt.execute(params!{
-    //                     "phase" => "submission",
-    //                 }).unwrap();
-    // }
+    for mut stmt in pool.prepare(r"INSERT INTO ConfMeta
+                                       (phase)
+                                   VALUES
+                                       (:phase)").into_iter() {
+        stmt.execute(params!{
+                        "phase" => "submission",
+                    }).unwrap();
+    }
 
     translate(&updates, policy_config);
 
@@ -310,6 +395,7 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
 
     Ok(()) 
 }
+
 
 // read in write policies and list of updates, translate updates to be policy compliant & print 
 fn main() {

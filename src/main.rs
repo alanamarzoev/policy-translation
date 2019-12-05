@@ -1,3 +1,4 @@
+#![allow(warnings, unused)]
 #[macro_use]
 extern crate mysql;
 
@@ -61,8 +62,202 @@ fn get_applicable(table_name: &str, policy_type: &str,
     return applicable
 }
 
+fn transform_update(table_name: &str, 
+                    ptype: &str, 
+                    policies: Vec<(String, mysql::serde_json::Value)>, 
+                    assignments: Vec<sqlparser::ast::Assignment>, 
+                    selection: Option<sqlparser::ast::Expr>,
+                    table_info: HashMap<String, HashMap<String, String>>) -> String {
+    // PROCESS: 
+    // 1. Figure out applicable policies 
+    // 2. Compute condition vars 
+    // 3. Create transaction 
 
-fn transform(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str, ptype: &str, values: Vec<(String, String)>, table_info: HashMap<String, HashMap<String, String>>) -> String {
+    let mut new_predicates: Vec<String> = Vec::new();
+    let mut cond_var_stmts = Vec::new(); 
+
+    let mut values = Vec::new(); 
+    
+    // extract assignment values & conditions
+    for assignment in assignments {
+        match assignment {
+            sqlparser::ast::Assignment{id, value} => {
+                match value.clone() {
+                    sqlparser::ast::Expr::Value(val) => {
+                        match val {
+                            sqlparser::ast::Value::Number(x) => {
+                                values.push((id, x)); 
+                            }, 
+                            _ => panic!("unimplemented"), 
+                        }
+                    }, 
+                    sqlparser::ast::Expr::Identifier(val) => {
+                        values.push((id, val)); 
+                    }
+                    _ => panic!("unimplemented!")
+                }
+            }, 
+            _ => {}
+        }
+    }
+
+    let mut cols = Vec::new(); 
+    for (col, val) in values.iter() {
+        cols.push(col.clone()); 
+    }
+
+    // match assignments 
+    let mut applicable = false; 
+    for (y, policy_array) in policies.iter() {
+        match policy_array {
+            serde_json::Value::Object(p) => {
+                let mut condition_vars = &p["condition_vars"]; 
+                let mut columns = &p["columns"]; 
+                let mut predicates = &p["predicate"]; 
+                let mut policy_type = &p["type"]; 
+
+                    // make sure the update affects some subset of the policy cols 
+                match columns.clone() {
+                    serde_json::Value::String(x) => {
+                        if x.contains("*") {
+                            applicable = true; 
+                        }
+                        for col in &cols {
+                            if x.contains(col) {
+                                applicable = true; 
+                            }
+                        }
+                    }, 
+                    _ => panic!("unimplemented")
+                }
+
+                // add condition variable evaluation to txn string 
+                match condition_vars.clone() {
+                    serde_json::Value::Array(p) => {
+                        for predicate in p.iter() {
+                            match predicate {
+                                serde_json::Value::Object(x) => {
+                                    for (cond_var_name, predicate) in x.iter() {
+                                        let pred = &x[cond_var_name];
+                                        match pred.clone() {
+                                            serde_json::Value::String(h) => {
+                                                cond_var_stmts.push((cond_var_name.clone(), h.clone())); 
+                                            }, 
+                                            _ => panic!("unimplemented")
+                                        }
+                                    }
+                                }, 
+                                _ => panic!("unimplemented")
+                            }
+                        }
+                    }, 
+                    _ => panic!("unimplemented")
+                }
+                
+                let mut policy_predicates = Vec::new(); 
+
+                // replace cond vars and "UPDATE."s
+                match predicates.clone() {
+                    serde_json::Value::String(x) => {
+                        let mut predicate_components = x.clone().replace("WHERE", ""); 
+                        let mut predicate_components = predicate_components.split("AND");
+                        let mut predicate_components = predicate_components.collect::<Vec<&str>>();
+                        
+                        println!("Pred comp {:?}", predicate_components); 
+                        for comp in &predicate_components {
+                            let mut updated = false; 
+                            for (cond_var_name, cond_var_statement) in cond_var_stmts.clone() {
+                                if comp.contains(&cond_var_name) {
+                                    let mut s = format!("@{:?}", cond_var_name);
+                                    let cond_var_slice: &str = &*s;  // take a full slice of the string
+                                    let cond_var_name_slice = &*cond_var_name; 
+                                    let new_stmt = comp.replace(cond_var_name_slice, cond_var_slice);
+                                    let new_stmt = new_stmt.trim(); 
+                                    let mut new_stmt = new_stmt.replace("\"", "");
+                                    let mut new_stmt_mod = new_stmt.split("="); 
+                                    let mut new_stmt_mod = new_stmt_mod.collect::<Vec<&str>>()[1];
+
+                                    policy_predicates.push(new_stmt.to_owned()); 
+                                    updated = true; 
+                                    break; 
+                                }
+                            }
+                            if updated == false {
+                                let mut c = comp.to_string(); 
+                                let c = c.trim();
+                                policy_predicates.push(c.to_owned()); 
+                            }
+                        }                    
+                    }, 
+                    _ => {}, 
+                }
+                
+                for pred in &policy_predicates {
+                    if pred.contains(&"UPDATE") {
+                        let mut field = pred.split("UPDATE."); 
+                        let mut field = field.collect::<Vec<&str>>()[1];
+                        let mut field = field.split("="); 
+                        let mut field = field.collect::<Vec<&str>>();
+                        let mut updated = false; 
+                        let mut tinfo = table_info[table_name].clone(); 
+                        for (col, val) in values.iter() {
+                            let mut stripped = field[0].replace(" ", "");
+                            let mut stripped = field[0].replace(" ", "");  
+                            if stripped == *col {
+                                let mut to_replace = format!("UPDATE.{}", field[0].trim()); 
+                                let mut val = val.clone(); 
+                                let mut new_pred = pred.replace(&*to_replace, &*val);
+                                let mut new_pred = new_pred.trim();  
+                                updated = true; 
+                                new_predicates.push(new_pred.to_string()); 
+                            }
+                        }
+                        if !updated {
+                            new_predicates.push(pred.to_string()); 
+                        }
+                    } else {
+                        new_predicates.push(pred.to_string()); 
+                    }
+                }
+            }, 
+            _ => panic!("unimplemented")
+        }
+    }
+
+    let mut txn = "START TRANSACTION; ".to_string(); 
+    for (var, cmd) in cond_var_stmts.iter() {
+        txn = format!("{} {}; ", txn, cmd); 
+    }
+
+    if ptype == "update" {
+        txn = format!("{}{}", txn, format!("UPDATE {} SET ", table_name)); 
+        let mut i = 0;
+        for (col, val) in values.iter() {
+            if i != values.len() - 1 {
+                txn = format!("{} {} = {}, ", txn, &*col.trim(), &*val.trim());
+            } else {
+                txn = format!("{} {} = {} WHERE ", txn, &*col.trim(), &*val.trim());
+            }
+            i += 1; 
+        }
+
+        let mut i = 0;
+            for pred in new_predicates.iter() {
+                if i == 0 {
+                    txn = format!("{} {}", txn, pred);
+                } else {
+                    txn = format!("{} AND {}", txn, pred);
+                }
+                i += 1; 
+            }
+            txn = format!("{} {}", txn, "; COMMIT;");
+    }
+
+    return txn; 
+}
+
+
+fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_name: &str, ptype: &str, values: Vec<(String, String)>, table_info: HashMap<String, HashMap<String, String>>) -> String {
     // PROCESS: 
     // 1. figure out policy predicates, fill in necessary values (i.e. UPDATE etc) 
     // 2. evaluate condition variables 
@@ -297,22 +492,16 @@ fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>
                 i += 1; 
             }
             let mut applicable = get_applicable(table_name, ptype, policies.clone());
-            let mut compliant_query = transform(applicable, table_name, ptype, cv_pairs, table_info); 
+            let mut compliant_query = transform_insert(applicable, table_name, ptype, cv_pairs, table_info); 
             return compliant_query; 
 
         }, 
         sqlparser::ast::Statement::Update{table_name, assignments, selection} => {
-            panic!("unimplemented");
-            // let ptype = "update"; 
-            // let table_name = &table_name.0[0];
-            // let mut i = 0;
-            // let mut cv_pairs = Vec::new();
-            // for column in &columns {
-            //     cv_pairs.push((column.clone(), values[i].clone()));
-            //     i += 1; 
-            // }
-            // let mut applicable = get_applicable(table_name, ptype, policies);
-            // let mut compliant_query = transform(table_name, ptype, cv_pairs); 
+            let ptype = "update"; 
+            let table_name = &table_name.0[0];
+            let mut applicable = get_applicable(table_name, ptype, policies);
+            let mut compliant_query = transform_update(table_name, ptype, applicable, assignments, selection, table_info); 
+            return "".to_string(); 
 
         },
         sqlparser::ast::Statement::Delete{table_name, selection} => {

@@ -77,7 +77,7 @@ fn transform_update(table_name: &str,
     let mut cond_var_stmts = Vec::new(); 
 
     let mut values = Vec::new(); 
-    
+
     // extract assignment values & conditions
     for assignment in assignments {
         match assignment {
@@ -163,7 +163,6 @@ fn transform_update(table_name: &str,
                         let mut predicate_components = predicate_components.split("AND");
                         let mut predicate_components = predicate_components.collect::<Vec<&str>>();
                         
-                        println!("Pred comp {:?}", predicate_components); 
                         for comp in &predicate_components {
                             let mut updated = false; 
                             for (cond_var_name, cond_var_statement) in cond_var_stmts.clone() {
@@ -501,7 +500,7 @@ fn translate(updates: &str, policies: serde_json::Map<String, serde_json::Value>
             let table_name = &table_name.0[0];
             let mut applicable = get_applicable(table_name, ptype, policies);
             let mut compliant_query = transform_update(table_name, ptype, applicable, assignments, selection, table_info); 
-            return "".to_string(); 
+            return compliant_query; 
 
         },
         sqlparser::ast::Statement::Delete{table_name, selection} => {
@@ -544,40 +543,40 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
     table_info.insert("People".to_string(), col_dict); 
     
     // spin up DB & populate!
-    let pool = my::Pool::new("mysql://root@localhost:3306/mysql").unwrap();
+    let pool = my::Pool::new("mysql://root@localhost:3306/mdb").unwrap();
 
-    pool.prep_exec(r"CREATE TEMPORARY TABLE People (
-        pid int not null,
-        name text not null,
-        role text not null
-    );", ()).unwrap();
+    // pool.prep_exec(r"CREATE TABLE People (
+    //     pid int not null,
+    //     name text not null,
+    //     role text not null
+    // );", ()).unwrap();
 
-    pool.prep_exec(r"CREATE TEMPORARY TABLE Comments (
-        cid int not null,
-        pid int not null,
-        comment text not null
-    );", ()).unwrap();
+    // pool.prep_exec(r"CREATE TABLE Comments (
+    //     cid int not null,
+    //     pid int not null,
+    //     comment text not null
+    // );", ()).unwrap();
 
-    pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
-        pid int not null,
-        sid int not null);", ()).unwrap();
+    // pool.prep_exec(r"CREATE TABLE Reviewers (
+    //     pid int not null,
+    //     sid int not null);", ()).unwrap();
 
-    pool.prep_exec(r"CREATE TEMPORARY TABLE ConfMeta (
-        phase text not null
-    );", ()).unwrap();
+    // pool.prep_exec(r"CREATE TABLE ConfMeta (
+    //     phase text not null
+    // );", ()).unwrap();
 
-    pool.prep_exec(r"CREATE TEMPORARY TABLE Submissions (
-        sid int not null,
-        primary_author text not null,
-        title text not null
-    );", ()).unwrap();
+    // pool.prep_exec(r"CREATE TABLE Submissions (
+    //     sid int not null,
+    //     primary_author text not null,
+    //     title text not null
+    // );", ()).unwrap();
 
-    pool.prep_exec(r"CREATE TEMPORARY TABLE Reviewers (
-        pid int not null,
-        sid int not null
-    );", ()).unwrap();
-
+    // pool.prep_exec(r"CREATE TABLE Reviewers (
+    //     pid int not null,
+    //     sid int not null
+    // );", ()).unwrap();
     
+
     for mut stmt in pool.prepare(r"INSERT INTO ConfMeta
                                        (phase)
                                    VALUES
@@ -588,10 +587,15 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
     }
 
     let mut txn = translate(&updates, policy_config, table_info);
-
-    println!("\n\n{}\n\n", txn); 
-    pool.prep_exec(txn, ()).unwrap();
-
+    let mut txn = txn.split(";");
+    let mut txn = txn.collect::<Vec<&str>>()[1..-1]; 
+    println!("txn: {:?}", txn);
+    for t in txn.iter() {
+        let mut t = format!("{};", t); 
+        println!("t: {}", t);
+        pool.prep_exec(t, ()).unwrap();
+    }
+    
     Ok(()) 
 }
 

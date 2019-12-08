@@ -1,6 +1,7 @@
 #![allow(warnings, unused)]
 #[macro_use]
 extern crate mysql;
+// extern crate time;
 
 use std::fs::File;
 use std::io::prelude::*;
@@ -10,7 +11,7 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use mysql as my;
 use std::collections::HashMap;
-
+use std::time::{Duration, Instant};
 
 
 #[derive(Debug, PartialEq, Eq)]
@@ -576,7 +577,6 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
     //     sid int not null
     // );", ()).unwrap();
     
-
     for mut stmt in pool.prepare(r"INSERT INTO ConfMeta
                                        (phase)
                                    VALUES
@@ -590,26 +590,29 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
     let mut txn = txn.split(";");
     let mut txn = txn.collect::<Vec<&str>>(); 
 
-    println!("txn: {:#?}", txn);
-
-
-    let mut actual_txn = pool.start_transaction(true, None, None).unwrap(); 
+    
     let max = txn.iter().len(); 
     txn.remove(max - 1);
-    println!("max {}", max);
+    let mut transaction = Vec::new(); 
     for t in txn.iter() {
         let mut fixed = format!("{};", t); 
-        // let mut fixed = format!("INSERT INTO People (pid, name, role) VALUES (0, 'alana', 'chair');"); 
-        println!("cmd: {:#?}", fixed); 
-        actual_txn.prep_exec(fixed.clone(), ()).unwrap(); 
+        transaction.push(fixed); 
+    }
+
+    let mut st = Instant::now();
+    let mut actual_txn = pool.start_transaction(true, None, None).unwrap(); 
+    for t in transaction.iter() {
+        actual_txn.prep_exec(t.clone(), ()).unwrap(); 
     }
     actual_txn.commit(); 
-    
-    // for t in txn.iter() {
-    //     let mut t = format!("{};", t); 
-    //     println!("t: {}", t);
-    //     pool.prep_exec(t, ()).unwrap();
-    // }
+    println!("policy elapsed: {:?}", st.elapsed());
+
+    let mut fixed = format!("INSERT INTO People (pid, name, role) VALUES (0, 'alana', 'chair');"); 
+    let mut st = Instant::now();
+    // let mut actual_txn = pool.start_transaction(true, None, None).unwrap(); 
+    pool.prep_exec(fixed.clone(), ()).unwrap(); 
+    // actual_txn.commit(); 
+    println!("no policy elapsed: {:?}", st.elapsed());
     
     Ok(()) 
 }

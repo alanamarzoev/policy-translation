@@ -983,6 +983,7 @@ dependencies = [
  "mysql",
  "serde_json",
  "sqlparser",
+ "time",
 ]
 
 [[package]]

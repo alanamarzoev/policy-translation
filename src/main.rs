@@ -223,7 +223,7 @@ fn transform_update(table_name: &str,
         }
     }
 
-    let mut txn = "START TRANSACTION; ".to_string(); 
+    let mut txn = "".to_string(); 
     for (var, cmd) in cond_var_stmts.iter() {
         txn = format!("{} {}; ", txn, cmd); 
     }
@@ -249,7 +249,7 @@ fn transform_update(table_name: &str,
                 }
                 i += 1; 
             }
-            txn = format!("{} {}", txn, "; COMMIT;");
+            txn = format!("{} {}", txn, ";");
     }
 
     return txn; 
@@ -396,7 +396,7 @@ fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_nam
         }
     }
 
-    let mut txn = "START TRANSACTION; ".to_string(); 
+    let mut txn = "".to_string(); 
     for (var, cmd) in cond_var_stmts.iter() {
         txn = format!("{} {}; ", txn, cmd); 
     }
@@ -454,7 +454,7 @@ fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_nam
             }
             i += 1; 
         }
-        txn = format!("{} {}", txn, "; COMMIT;");
+        txn = format!("{} {}", txn, ";");
     }
 
     return txn; 
@@ -588,13 +588,28 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
 
     let mut txn = translate(&updates, policy_config, table_info);
     let mut txn = txn.split(";");
-    let mut txn = txn.collect::<Vec<&str>>()[1..-1]; 
-    println!("txn: {:?}", txn);
+    let mut txn = txn.collect::<Vec<&str>>(); 
+
+    println!("txn: {:#?}", txn);
+
+
+    let mut actual_txn = pool.start_transaction(true, None, None).unwrap(); 
+    let max = txn.iter().len(); 
+    txn.remove(max - 1);
+    println!("max {}", max);
     for t in txn.iter() {
-        let mut t = format!("{};", t); 
-        println!("t: {}", t);
-        pool.prep_exec(t, ()).unwrap();
+        let mut fixed = format!("{};", t); 
+        // let mut fixed = format!("INSERT INTO People (pid, name, role) VALUES (0, 'alana', 'chair');"); 
+        println!("cmd: {:#?}", fixed); 
+        actual_txn.prep_exec(fixed.clone(), ()).unwrap(); 
     }
+    actual_txn.commit(); 
+    
+    // for t in txn.iter() {
+    //     let mut t = format!("{};", t); 
+    //     println!("t: {}", t);
+    //     pool.prep_exec(t, ()).unwrap();
+    // }
     
     Ok(()) 
 }

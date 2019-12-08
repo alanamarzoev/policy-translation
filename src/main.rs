@@ -328,7 +328,6 @@ fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_nam
                         let mut predicate_components = predicate_components.split("AND");
                         let mut predicate_components = predicate_components.collect::<Vec<&str>>();
                         
-                        println!("Pred comp {:?}", predicate_components); 
                         for comp in &predicate_components {
                             let mut updated = false; 
                             for (cond_var_name, cond_var_statement) in cond_var_stmts.clone() {
@@ -342,7 +341,6 @@ fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_nam
                                     let mut new_stmt_mod = new_stmt.split("="); 
                                     let mut new_stmt_mod = new_stmt_mod.collect::<Vec<&str>>()[1];
 
-                                    println!("pol pred {:?}", new_stmt);
                                     policy_predicates.push(new_stmt.to_owned()); 
                                     updated = true; 
                                     break; 
@@ -374,7 +372,6 @@ fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_nam
                                 let mut to_replace = format!("UPDATE.{}", field[0].trim()); 
                                 let mut val = val.clone(); 
                                 if tinfo[col] == "str" {
-                                    println!("tinfo col {}", tinfo[col]); 
                                     val = format!("'{}'", val); 
                                 }
                                 let mut new_pred = pred.replace(&*to_replace, &*val);
@@ -421,11 +418,8 @@ fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_nam
 
         // TODO: add quotes based on type 
         let mut i = 0;
-        println!("tinfo {:?}", table_info); 
         let mut tinfo = table_info[table_name].clone(); 
-        println!("vals {:?}", values); 
         for (col, val) in values.iter() {
-            println!("col {} info {}", col, tinfo[col]); 
             if tinfo[col] == "str" {
                 if i == 0 {
                     txn = format!("{} '{}'", txn, &*val.trim());
@@ -439,7 +433,6 @@ fn transform_insert(policies: Vec<(String, mysql::serde_json::Value)>, table_nam
                     txn = format!("{}, {}", txn, &*val.trim());
                 }
             }
-            println!("txn : {:?}", txn); 
             i += 1;
         }
 
@@ -546,36 +539,32 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
     // spin up DB & populate!
     let pool = my::Pool::new("mysql://root@localhost:3306/mdb").unwrap();
 
-    // pool.prep_exec(r"CREATE TABLE People (
-    //     pid int not null,
-    //     name text not null,
-    //     role text not null
-    // );", ()).unwrap();
+    pool.prep_exec(r"CREATE TABLE People (
+        pid int not null,
+        name text not null,
+        role text not null
+    );", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TABLE Comments (
-    //     cid int not null,
-    //     pid int not null,
-    //     comment text not null
-    // );", ()).unwrap();
+    pool.prep_exec(r"CREATE TABLE Comments (
+        cid int not null,
+        pid int not null,
+        comment text not null
+    );", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TABLE Reviewers (
-    //     pid int not null,
-    //     sid int not null);", ()).unwrap();
+    pool.prep_exec(r"CREATE TABLE Reviewers (
+        pid int not null,
+        sid int not null);", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TABLE ConfMeta (
-    //     phase text not null
-    // );", ()).unwrap();
+    pool.prep_exec(r"CREATE TABLE ConfMeta (
+        phase text not null
+    );", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TABLE Submissions (
-    //     sid int not null,
-    //     primary_author text not null,
-    //     title text not null
-    // );", ()).unwrap();
+    pool.prep_exec(r"CREATE TABLE Submissions (
+        sid int not null,
+        primary_author text not null,
+        title text not null
+    );", ()).unwrap();
 
-    // pool.prep_exec(r"CREATE TABLE Reviewers (
-    //     pid int not null,
-    //     sid int not null
-    // );", ()).unwrap();
     
     for mut stmt in pool.prepare(r"INSERT INTO ConfMeta
                                        (phase)
@@ -586,11 +575,17 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
                     }).unwrap();
     }
 
+    let mut fixed = format!("INSERT INTO People (pid, name, role) VALUES (0, 'alana', 'chair');"); 
+    let mut st = Instant::now();
+    // let mut actual_txn = pool.start_transaction(true, None, None).unwrap(); 
+    pool.prep_exec(fixed.clone(), ()).unwrap(); 
+    // actual_txn.commit(); 
+    println!("no policy elapsed: {:?}", st.elapsed());
+
     let mut txn = translate(&updates, policy_config, table_info);
     let mut txn = txn.split(";");
     let mut txn = txn.collect::<Vec<&str>>(); 
 
-    
     let max = txn.iter().len(); 
     txn.remove(max - 1);
     let mut transaction = Vec::new(); 
@@ -606,13 +601,6 @@ fn bootstrap(updates_path: &str, policy_path: &str) -> std::io::Result<()> {
     }
     actual_txn.commit(); 
     println!("policy elapsed: {:?}", st.elapsed());
-
-    let mut fixed = format!("INSERT INTO People (pid, name, role) VALUES (0, 'alana', 'chair');"); 
-    let mut st = Instant::now();
-    // let mut actual_txn = pool.start_transaction(true, None, None).unwrap(); 
-    pool.prep_exec(fixed.clone(), ()).unwrap(); 
-    // actual_txn.commit(); 
-    println!("no policy elapsed: {:?}", st.elapsed());
     
     Ok(()) 
 }
